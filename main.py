@@ -1,110 +1,97 @@
-import requests, time, threading
-from telegram import Bot
+# ==============================
+#   SADDAM SNIPER PHASE 3.5
+#   All-in-One Ghost-Level Algo
+#   Telegram Elite Alerts Only
+# ==============================
+
+import requests
+import time
+import threading
 from flask import Flask
-import logging
-import numpy as np
 
-# === YOUR CREDENTIALS ===
-TOKEN = "8223601715:AAE0iVYff1eS1M4jcFytEbd1jcFzV-b6fFo"
+# === BOT SETTINGS ===
+BOT_TOKEN = "8223601715:AAE0iVYff1eS1M4jcFytEbd1jcFzV-b6fFo"
 CHAT_ID = "1873122742"
+COINS = ["CFXUSDT", "BLURUSDT", "JUPUSDT", "MBOXUSDT", "PYTHUSDT", "PYRUSDT", "HMSTRUSDT", "ONEUSDT"]
+API_URL = "https://api.binance.com/api/v3/klines"
+INTERVAL = "1m"
+LIMIT = 50
 
-bot = Bot(token=TOKEN)
+# === FLASK ===
 app = Flask(__name__)
 
-# === YOUR 8 COINS ===
-COINS = [
-    "CFXUSDT",
-    "BLURUSDT",
-    "JUPUSDT",
-    "PYTHUSDT",
-    "PYRUSDT",
-    "MBOXUSDT",
-    "PNUTUSDT",
-    "AIUSDT"
-]
+@app.route("/")
+def home():
+    return "SADDAM SNIPER PHASE 3.5 IS ACTIVE"
 
-BASE_URL = "https://api.binance.com/api/v3/"
-alerted = {}  # coin: last alert timestamp
+# === ALERT FUNCTION ===
+def send_telegram(msg):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    data = {"chat_id": CHAT_ID, "text": msg}
+    requests.post(url, data=data)
 
-# === Fetch Historical Closing Prices ===
-def get_klines(symbol, interval="1m", limit=100):
-    url = BASE_URL + "klines"
-    params = {"symbol": symbol, "interval": interval, "limit": limit}
+# === UTILS ===
+def get_klines(symbol):
     try:
-        r = requests.get(url, params=params, timeout=10)
-        r.raise_for_status()
-        return [float(i[4]) for i in r.json()]
-    except:
-        return None
-
-# === Determine Market Regime (Clean Trend Filter) ===
-def market_regime(prices):
-    if not prices: return False
-    returns = np.diff(prices) / prices[:-1]
-    volatility = np.std(returns)
-    trend_strength = abs(prices[-1] - prices[0]) / prices[0]
-    return trend_strength > 0.01 and volatility > 0.003
-
-# === Volume + % Change Filter ===
-def volume_breakout(symbol):
-    url = BASE_URL + "ticker/24hr"
-    try:
-        r = requests.get(url, params={"symbol": symbol}, timeout=5)
+        url = f"{API_URL}?symbol={symbol}&interval={INTERVAL}&limit={LIMIT}"
+        r = requests.get(url)
         data = r.json()
-        vol_now = float(data["quoteVolume"])
-        change = float(data["priceChangePercent"])
-        return vol_now > 1_000_000 and abs(change) > 2.5
+        return [
+            {
+                "open": float(k[1]),
+                "high": float(k[2]),
+                "low": float(k[3]),
+                "close": float(k[4]),
+                "volume": float(k[5])
+            } for k in data
+        ]
     except:
-        return False
+        return []
 
-# === Conviction Score Calculation ===
-def calculate_conviction(prices):
-    if not prices: return 0
-    recent = prices[-10:]
-    trend = (recent[-1] - recent[0]) / recent[0]
-    returns = np.diff(recent) / recent[:-1]
-    vol = np.std(returns)
-    zscore = (recent[-1] - np.mean(recent)) / (np.std(recent) + 1e-9)
-    return (abs(trend) * 50 + vol * 100 + abs(zscore) * 30)  # Out of ~180
+# === STRATEGY CORE ===
+def analyze(klines):
+    if len(klines) < 10:
+        return 0
 
-# === Main Alert Condition ===
-def should_alert(symbol):
-    now = time.time()
-    if symbol in alerted and now - alerted[symbol] < 300:
-        return False
-    prices = get_klines(symbol)
-    if not market_regime(prices): return False
-    if not volume_breakout(symbol): return False
-    score = calculate_conviction(prices)
-    if score < 80: return False
-    alerted[symbol] = now
-    return True
+    vol_now = klines[-1]["volume"]
+    vol_avg = sum(k["volume"] for k in klines[-10:-1]) / 9
+    price_now = klines[-1]["close"]
+    price_prev = klines[-2]["close"]
+    wick_size = klines[-1]["high"] - klines[-1]["low"]
 
-# === Send Alert to Telegram ===
-def send_alert(symbol):
-    try:
-        r = requests.get(BASE_URL + "ticker/price", params={"symbol": symbol})
-        price = float(r.json()["price"])
-        msg = f"🚀 *ALERT: {symbol}*\n💰 Price: `{price:.5f}`\n🔥 Entry Score: HIGH\n⏱ Time: {time.strftime('%H:%M:%S')}`"
-        bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
-    except Exception as e:
-        print(f"Telegram send error: {e}")
+    # === SIGNAL COMPONENTS ===
+    price_move = abs(price_now - price_prev) / price_prev
+    vol_spike = vol_now > vol_avg * 2
+    wick_thin = wick_size / price_now < 0.01
 
-# === Main Sniper Loop ===
-def sniper_loop():
+    whale_detected = vol_spike and wick_thin and price_move > 0.01
+    human_dumb_move = price_move < 0.003 and vol_now < vol_avg * 0.8
+
+    score = 0
+    if vol_spike: score += 1
+    if wick_thin: score += 1
+    if whale_detected: score += 1
+    if not human_dumb_move: score += 1
+    if price_now > klines[-5]["close"]: score += 1
+
+    return score * 20  # scale to 100
+
+# === SCANNER ===
+def sniper():
     while True:
         for coin in COINS:
-            try:
-                if should_alert(coin):
-                    send_alert(coin)
-            except Exception as e:
-                print(f"Error checking {coin}: {e}")
-        time.sleep(30)
+            klines = get_klines(coin)
+            score = analyze(klines)
 
-# === Web Server to Keep Render Alive ===
-@app.route('/')
-def home():
-    return "✅ SADDAM PHASE 2 ONLINE"
+            if score >= 80:
+                send_telegram(f"\u2705 ENTRY FOUND! {coin}: Score {score}/100")
+        time.sleep(20)
+
+# === STARTUP ===
+if __name__ == '__main__':
+    threading.Thread(target=sniper).start()
+    app.run(host="0.0.0.0", port=3000)
+
 
 if __name__ == "__main__":
     logging.getLogger('werkzeug').disabled = True
