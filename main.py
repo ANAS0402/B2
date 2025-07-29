@@ -1,99 +1,68 @@
+import threading
 import time
 import requests
+from flask import Flask
 from telegram import Bot
 
-# === CONFIG ===
-BOT_TOKEN = "8223601715:AAE0iVYff1eS1M4jcFytEbd1jcFzV-b6fFo"
+# === Telegram Config ===
+TOKEN = "8223601715:AAE0iVYff1eS1M4jcFytEbd1jcFzV-b6fFo"
 CHAT_ID = "1873122742"
-SYMBOLS = ["CFX", "BLUR", "JUP", "MBOX", "PYTH", "PYR", "HMSTR", "ONE"]
-MIN_SCORE_TO_ALERT = 85
-CHECK_INTERVAL = 60  # seconds
-bot = Bot(token=BOT_TOKEN)
+bot = Bot(token=TOKEN)
 
-def fetch_klines(symbol):
-    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}USDT&interval=1m&limit=10"
-    response = requests.get(url)
-    return response.json()
+# === Your Coin Targets ===
+COINS = ["CFX", "BLUR", "JUP", "MBOX", "PYTH", "PYR", "HMSTR", "ONE"]
 
-def analyze(symbol):
-    klines = fetch_klines(symbol)
-    if len(klines) < 10:
-        return None
+# === Strategy Parameters ===
+ALERT_INTERVAL = 300  # Only alert on a coin every 5 minutes
+LAST_ALERT = {}
 
-    last = klines[-1]
-    close = float(last[4])
-    high = float(last[2])
-    low = float(last[3])
-    open_ = float(last[1])
-    volume = float(last[5])
-    
-    wick_down = open_ - low if open_ > low else 0
-    wick_up = high - close if close < high else 0
-    body = abs(close - open_)
+# === Advanced Filtering (example conditions) ===
+def is_strong_entry(coin_data):
+    price_change = float(coin_data.get("priceChangePercent", 0))
+    volume = float(coin_data.get("quoteVolume", 0))
 
-    # Score system
-    score = 0
-    reason = []
+    # Alien-like logic: sudden dump + high volume = sniper interest
+    return price_change < -8 and volume > 1_000_000
 
-    # 1. Wick detection (liquidity grab)
-    if wick_down > body * 2:
-        score += 30
-        reason.append("Long wick down (liquidity grab)")
+# === Binance Price Fetcher ===
+def fetch_binance_data():
+    try:
+        res = requests.get("https://api.binance.com/api/v3/ticker/24hr")
+        if res.status_code == 200:
+            return res.json()
+    except Exception as e:
+        print("Binance fetch error:", e)
+    return []
 
-    # 2. Volume spike
-    volumes = [float(k[5]) for k in klines[:-1]]
-    avg_volume = sum(volumes[-5:]) / 5
-    if volume > avg_volume * 2:
-        score += 25
-        reason.append("Volume spike")
-
-    # 3. Volatility squeeze breakout
-    closes = [float(k[4]) for k in klines[-6:]]
-    volatility = max(closes) - min(closes)
-    if volatility / close < 0.005:  # <0.5%
-        score -= 20  # compressing
-    elif volatility / close > 0.015:
-        score += 20
-        reason.append("Volatility breakout")
-
-    # 4. Price recovery (close > open after big wick)
-    if wick_down > 0 and close > open_:
-        score += 15
-        reason.append("Price recovery after wick")
-
-    # 5. Momentum: higher high
-    prev_high = float(klines[-2][2])
-    if high > prev_high:
-        score += 10
-        reason.append("Higher high formed")
-
-    return {
-        "symbol": symbol,
-        "score": score,
-        "price": close,
-        "reason": reason
-    }
-
-def send_alert(data):
-    msg = f"🚨 ENTRY SIGNAL [{data['symbol']}]\n"
-    msg += f"Price: {data['price']:.4f} USDT\n"
-    msg += f"Score: {data['score']} / 100\n"
-    msg += "Reasons:\n"
-    for r in data["reason"]:
-        msg += f"• {r}\n"
-    bot.send_message(chat_id=CHAT_ID, text=msg)
-
-def main_loop():
-    print("🧠 Sniper Phase 3 started...")
+# === Sniper Main Logic ===
+def sniper_loop():
     while True:
-        for sym in SYMBOLS:
-            try:
-                data = analyze(sym)
-                if data and data['score'] >= MIN_SCORE_TO_ALERT:
-                    send_alert(data)
-            except Exception as e:
-                print(f"Error on {sym}: {e}")
-        time.sleep(CHECK_INTERVAL)
+        print("🔄 Scanning...")
+        data = fetch_binance_data()
+        now = time.time()
 
-if __name__ == "__main__":
-    main_loop()
+        for coin_data in data:
+            symbol = coin_data["symbol"]
+            if not any(coin in symbol for coin in COINS):
+                continue
+
+            if is_strong_entry(coin_data):
+                if symbol not in LAST_ALERT or now - LAST_ALERT[symbol] > ALERT_INTERVAL:
+                    message = f"🚨 SNIPER ENTRY DETECTED\nCoin: {symbol}\nDrop: {coin_data['priceChangePercent']}%\nVolume: ${float(coin_data['quoteVolume']):,.0f}"
+                    bot.send_message(chat_id=CHAT_ID, text=message)
+                    LAST_ALERT[symbol] = now
+                    print("🔔 Sent:", message)
+
+        time.sleep(30)
+
+# === Flask Web App for Render Free Tier ===
+app = Flask(__name__)
+
+@app.route('/')
+def index():
+    return "🟢 Saddam Sniper Running..."
+
+# === Run bot in separate thread ===
+if __name__ == '__main__':
+    threading.Thread(target=sniper_loop).start()
+    app.run(host="0.0.0.0", port=3000)
