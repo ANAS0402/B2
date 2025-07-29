@@ -1,98 +1,79 @@
-# Saddam Phase 3: Emulating Aladdin's Capabilities
-# This file outlines a full system architecture and behavior-matching logic based on publicly known and speculative capabilities of BlackRock's Aladdin system.
-# Structure will follow the exact features detailed in our prior breakdown.
 
-### 1. Deep Behavioral Insights & Sentiment Analysis
-# (Real-time speech/news NLP tone-based trigger)
-from transformers import pipeline
-sentiment_model = pipeline("sentiment-analysis")
-
-def analyze_news_sentiment(news_text):
-    result = sentiment_model(news_text)
-    return result[0]  # {'label': 'POSITIVE', 'score': 0.98}
-
-### 2. Real-Time Executive Speech Monitoring (Text-based Simulation)
-def detect_exec_sentiment(exec_name, text):
-    result = analyze_news_sentiment(text)
-    if result['label'] == 'NEGATIVE' and result['score'] > 0.90:
-        return f"{exec_name}'s sentiment is strongly negative, potential market impact."
-    return None
-
-### 3. Swap Flow Tracing (Mocked via Axoni-like Placeholder)
-swap_flows = {
-    'Citi': {'notional': 1000000, 'side': 'short'},
-    'Goldman': {'notional': 2000000, 'side': 'long'}
-}
-
-def trace_equity_swaps():
-    return swap_flows  # placeholder for real blockchain-backed source
-
-### 4. Historical Behavior Tracking (Client Memory)
-client_profiles = {}
-
-def update_client_behavior(client_id, trade, result):
-    profile = client_profiles.get(client_id, {'wins': 0, 'losses': 0})
-    if result == 'win':
-        profile['wins'] += 1
-    else:
-        profile['losses'] += 1
-    client_profiles[client_id] = profile
-
-### 5. Simulation & Monte Carlo (Mini Version)
-import numpy as np
-
-def monte_carlo_sim(price, mu, sigma, steps, trials):
-    simulations = []
-    for _ in range(trials):
-        path = [price]
-        for _ in range(steps):
-            price *= np.exp((mu - 0.5 * sigma ** 2) + sigma * np.random.normal())
-            path.append(price)
-        simulations.append(path)
-    return simulations
-
-### 6. Self-Evolving Logic (Dynamic Threshold Adjustment)
-entry_score_threshold = 0.85
-entry_memory = []
-
-def evolve_thresholds(new_result):
-    global entry_score_threshold
-    entry_memory.append(new_result)
-    if len(entry_memory) > 10:
-        success_rate = sum(entry_memory[-10:]) / 10
-        if success_rate > 0.8:
-            entry_score_threshold -= 0.01  # be more aggressive
-        else:
-            entry_score_threshold += 0.01  # be more conservative
-
-### 7. Entry Alert System (Telegram Integration)
 import requests
-TELEGRAM_TOKEN = "8223601715:AAE0iVYff1eS1M4jcFytEbd1jcFzV-b6fFo"
+from textblob import TextBlob
+import time
+
+# === CONFIGURATION ===
+BOT_TOKEN = "8223601715:AAE0iVYff1eS1M4jcFytEbd1jcFzV-b6fFo"
 CHAT_ID = "1873122742"
+COINS = ["CFX", "BLUR", "JUP", "MBOX", "PYTH", "PYR", "HMSTR", "ONE"]
+INTERVAL = 60  # check every 60 seconds
+ALERT_THRESHOLD = 75  # score threshold for sending alert
 
-def send_alert(message):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": message}
-    requests.post(url, data=payload)
+def get_price_data(symbol):
+    try:
+        url = f"https://api.binance.com/api/v3/ticker/24hr?symbol={symbol}USDT"
+        response = requests.get(url, timeout=10)
+        data = response.json()
+        return {
+            "symbol": symbol,
+            "price_change": float(data["priceChangePercent"]),
+            "volume": float(data["volume"]),
+            "last_price": float(data["lastPrice"])
+        }
+    except Exception as e:
+        return None
 
-### 8. Entry Evaluation Engine (Master Switch)
-def evaluate_entry(coin, price, volatility, signal_strength):
-    score = signal_strength * (1 - volatility)
-    if score > entry_score_threshold:
-        msg = f"ENTRY FOUND: {coin}\nPrice: {price}\nScore: {score:.2f} > Threshold: {entry_score_threshold:.2f}"
-        send_alert(msg)
-        evolve_thresholds(1)
+def get_sentiment(text):
+    blob = TextBlob(text)
+    polarity = blob.sentiment.polarity
+    return "POSITIVE" if polarity > 0.1 else "NEGATIVE"
+
+def fetch_news_placeholder(coin):
+    # Placeholder: use mock text
+    return [f"{coin} sees increased activity."]
+
+def score_coin(data):
+    score = 0
+    breakdown = []
+
+    if abs(data["price_change"]) > 5:
+        score += 25
+        breakdown.append(f"🚀 Strong price change: {data['price_change']}%")
+
+    if data["volume"] > 5000000:
+        score += 25
+        breakdown.append(f"💸 High volume: {round(data['volume']/1e6, 2)}M")
+
+    news = fetch_news_placeholder(data["symbol"])
+    sentiment = get_sentiment(" ".join(news))
+    if sentiment == "POSITIVE":
+        score += 15
+        breakdown.append("🗞️ Positive sentiment (TextBlob)")
+
+    if score >= ALERT_THRESHOLD:
+        return score, breakdown
     else:
-        evolve_thresholds(0)
+        return None, None
 
-### MAIN LOOP (Mocked)
-tracked_coins = ['CFX', 'BLUR', 'JUP', 'MBOX', 'PYTH', 'PYR', 'HMSTR', 'ONE']
-for coin in tracked_coins:
-    # Mock data
-    current_price = np.random.uniform(0.1, 5.0)
-    volatility = np.random.uniform(0.01, 0.2)
-    signal = np.random.uniform(0.7, 1.0)
-    evaluate_entry(coin, current_price, volatility, signal)
+def send_telegram_alert(symbol, score, breakdown, price):
+    message = f"📡 *Entry Alert*: {symbol}USDT\n"               f"📈 Score: *{score}*\n"               f"💰 Price: {price} USDT\n"               + "\n".join(breakdown)
+    payload = {
+        "chat_id": CHAT_ID,
+        "text": message,
+        "parse_mode": "Markdown"
+    }
+    requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", data=payload)
 
-# This Phase 3 architecture implements ALL 7 points of Aladdin's known & rumored capabilities.
-# Every module matches or simulates the behavior of the corresponding Alladin feature.
+def run():
+    while True:
+        for coin in COINS:
+            data = get_price_data(coin)
+            if data:
+                score, breakdown = score_coin(data)
+                if score:
+                    send_telegram_alert(coin, score, breakdown, data["last_price"])
+        time.sleep(INTERVAL)
+
+if __name__ == "__main__":
+    run()
