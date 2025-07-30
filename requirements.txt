@@ -1,6 +1,6 @@
-requests
-python-telegram-bot==13.15
-pandas
-textblob
 yfinance
+pandas
+requests
+textblob
+python-telegram-bot==13.15
 schedule
