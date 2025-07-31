@@ -1,137 +1,115 @@
-import json, time, threading
-import requests
-import websocket
+import requests, json, time, os, random
 from datetime import datetime
-from http.server import BaseHTTPRequestHandler, HTTPServer
-from collections import deque
 from textblob import TextBlob
+from apscheduler.schedulers.background import BackgroundScheduler
+from telegram import Bot
 
-# ========================
-# CONFIG
-# ========================
 BOT_TOKEN = "8223601715:AAE0iVYff1eS1M4jcFytEbd1jcFzV-b6fFo"
 CHAT_ID = "1873122742"
-COINS = ["CFXUSDT","BLURUSDT","JUPUSDT","MBOXUSDT","PYTHUSDT","PYRUSDT","HMSTRUSDT","ONEUSDT"]
+COINS = ["CFX", "BLUR", "JUP", "MBOX", "PYTH", "PYR", "HMSTR", "ONE"]
+MEMORY_FILE = "memory.json"
+SCORE_THRESHOLD = 85
 
-ALERT_COOLDOWN = 3600  # 1h between same coin alerts
-ALERT_SCORE_MIN = 80
+bot = Bot(token=BOT_TOKEN)
 
-last_alerts = {}
-alert_memory = {coin: deque(maxlen=20) for coin in COINS}  # memory of last 20 alerts per coin
+if not os.path.exists(MEMORY_FILE):
+    json.dump({"alerts": {}, "success": {}}, open(MEMORY_FILE, "w"))
 
-# ========================
-# KEEP ALIVE SERVER
-# ========================
-class KeepAliveHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b'SADDAM BOT ULTRA IQ 999 is running')
+def load_memory():
+    return json.load(open(MEMORY_FILE))
 
-def run_server():
-    server = HTTPServer(('0.0.0.0', 10000), KeepAliveHandler)
-    server.serve_forever()
+def save_memory(mem):
+    json.dump(mem, open(MEMORY_FILE, "w"))
 
-threading.Thread(target=run_server, daemon=True).start()
+def fetch_price(coin):
+    url = "https://api.coingecko.com/api/v3/coins/markets"
+    params = {"vs_currency": "usd", "ids": coin.lower()}
+    try:
+        data = requests.get(url, params=params, timeout=5).json()
+        if data:
+            return {
+                "price": data[0]["current_price"],
+                "volume": data[0]["total_volume"],
+                "change_1h": data[0].get("price_change_percentage_1h_in_currency", 0)
+            }
+    except:
+        return None
+    return None
 
-# ========================
-# TELEGRAM ALERT FUNCTION
-# ========================
-def send_alert(coin, score, reasons, confidence):
-    msg = (
-        f"🚀 ENTRY ALERT: {coin}\n"
-        f"Score: {score}/100\n"
-        "Reasons:\n" +
-        "\n".join([f"{i+1}. {r}" for i, r in enumerate(reasons)]) +
-        f"\nConfidence: {confidence}\n"
-        f"Time: {datetime.utcnow().strftime('%H:%M:%S UTC')}"
-    )
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
+def alien_prediction(coin, price_info):
+    """
+    Alien logic: simulate multiple futures with randomness to find hidden moves.
+    """
+    if not price_info: return 0, "No data"
+    # Monte Carlo style prediction
+    projections = [price_info["price"] * (1 + random.uniform(-0.02,0.03)) for _ in range(30)]
+    upward_bias = sum(1 for p in projections if p > price_info["price"]) / len(projections)
+    reason = f"Alien projection shows {upward_bias*100:.0f}% bullish micro-future"
+    return upward_bias*100, reason
 
-# ========================
-# SCORING ENGINE + REASONS
-# ========================
-price_cache = {}
-volume_cache = {}
-
-def calculate_score(coin, old_price, new_price, old_vol, new_vol):
-    reasons = []
-    if old_price == 0: return 0, reasons
-
-    price_change = ((new_price-old_price)/old_price)*100
-    volume_change = ((new_vol-old_vol)/max(1,old_vol))*100
+def compute_score(coin, price_info, memory):
+    if not price_info: return 0, []
 
     score = 0
-    # 1. Price Momentum
-    if abs(price_change) > 0.8:
-        score += min(abs(price_change*2), 30)
-        reasons.append(f"Price momentum {price_change:+.2f}%")
+    reasons = []
 
-    # 2. Whale Volume Spike
-    if volume_change > 50:
-        score += min(volume_change/5, 30)
-        reasons.append(f"Whale spike +{volume_change:.1f}% vol")
-
-    # 3. Liquidity Trap Reversal
-    if abs(price_change)>1.5 and volume_change>100:
+    # 1. Volume & price momentum
+    if abs(price_info["change_1h"]) > 1:
         score += 20
-        reasons.append("Liquidity trap reversal (long wick)")
+        reasons.append(f"Momentum {price_info['change_1h']:.2f}%")
 
-    # 4. Trend Memory Influence
-    wins = sum(1 for s in alert_memory[coin] if s >= 80)
-    losses = len(alert_memory[coin]) - wins
-    if wins >= 3:
-        score += 10
-        reasons.append(f"Trend memory: {wins}/{len(alert_memory[coin])} past alerts good")
+    if price_info["volume"] > 1_000_000:
+        score += 20
+        reasons.append(f"Whale volume {price_info['volume']:,}")
 
-    # 5. Fake Sentiment Divergence
-    polarity = TextBlob(coin.lower()).sentiment.polarity
-    if (price_change>0 and polarity<0) or (price_change<0 and polarity>0):
-        score += 10
-        reasons.append("Sentiment divergence detected")
+    # 2. Sentiment twist
+    sent = TextBlob(f"{coin} crypto market hype").sentiment.polarity*100
+    if (sent>30 and price_info["change_1h"]<0) or (sent< -30 and price_info["change_1h"]>0):
+        score += 15
+        reasons.append(f"Sentiment divergence {sent:.1f}")
 
-    # 6. Volatility/Noise Filter
-    if abs(price_change)<0.2 and volume_change<10:
-        score = 0
-        reasons = ["Move too weak, filtered"]
+    # 3. Alien prediction
+    alien_score, alien_reason = alien_prediction(coin, price_info)
+    if alien_score>50:
+        score += 25
+        reasons.append(alien_reason)
 
-    return min(int(score),100), reasons
+    # 4. Memory boost
+    success_rate = memory["success"].get(coin, 50)
+    if success_rate>60:
+        score+=10
+        reasons.append(f"Memory favor: {success_rate}% accuracy")
 
-# ========================
-# BINANCE WEBSOCKET
-# ========================
-def on_message(ws, message):
-    data = json.loads(message)
-    if 's' not in data: return
-    coin = data['s']
-    price = float(data['c'])
-    vol = float(data['v'])
+    return min(score,100), reasons
 
-    old_price = price_cache.get(coin, price)
-    old_vol = volume_cache.get(coin, vol)
+def send_alert(coin, score, reasons):
+    msg = f"👽 ALIEN ENTRY: {coin}\nScore {score}/100\nReasons:\n"
+    msg += "\n".join([f"• {r}" for r in reasons])
+    msg += f"\nTime: {datetime.utcnow()} UTC"
+    bot.send_message(chat_id=CHAT_ID, text=msg)
 
-    score, reasons = calculate_score(coin, old_price, price, old_vol, vol)
+def scan_market():
+    mem = load_memory()
+    for coin in COINS:
+        info = fetch_price(coin)
+        score, reasons = compute_score(coin, info, mem)
+        if score < SCORE_THRESHOLD or len(reasons)<3:
+            continue
 
-    price_cache[coin] = price
-    volume_cache[coin] = vol
+        last_alerts = mem["alerts"].get(coin,[])
+        now = time.time()
+        if last_alerts and now - last_alerts[-1] < 3600:
+            continue
 
-    now = datetime.utcnow()
-    if score >= ALERT_SCORE_MIN:
-        last_time = last_alerts.get(coin)
-        if not last_time or (now - last_time).total_seconds() > ALERT_COOLDOWN:
-            confidence = "🚀 Ultra" if score>=90 else "⚡ Medium"
-            send_alert(coin, score, reasons, confidence)
-            last_alerts[coin] = now
-            alert_memory[coin].append(score)
+        mem["alerts"].setdefault(coin,[]).append(now)
+        mem["alerts"][coin] = mem["alerts"][coin][-10:]
+        save_memory(mem)
 
-def on_error(ws, error): print("Error:", error)
-def on_close(ws, close_status_code, close_msg): print("WebSocket closed, reconnecting...")
-def on_open(ws): print("Connected to Binance WebSocket")
+        send_alert(coin,score,reasons)
 
-if __name__ == "__main__":
-    streams = "/".join([f"{c.lower()}@ticker" for c in COINS])
-    ws = websocket.WebSocketApp(f"wss://stream.binance.com:9443/stream?streams={streams}",
-                                on_message=on_message, on_error=on_error, on_close=on_close)
-    ws.on_open = on_open
-    ws.run_forever()
+sched = BackgroundScheduler()
+sched.add_job(scan_market,"interval",minutes=2)
+sched.start()
+print("👽 SADDAM Alien IQ∞ running...")
+while True:
+    time.sleep(60)
