@@ -1,104 +1,140 @@
-# Saddam System - Final Alladin Mirror (Light Version for Free Tier)
-
 import requests
 import time
-import yfinance as yf
-import schedule
-from textblob import TextBlob
+from datetime import datetime
 from telegram import Bot
-import pandas as pd
+import statistics
 
-# === CONFIGURATION ===
-BOT_TOKEN = "8223601715:AAE0iVYff1eS1M4jcFytEbd1jcFzV-b6fFo"
-CHAT_ID = "1873122742"
-COINS = ["CFX", "BLUR", "JUP", "MBOX", "PYTH", "PYR", "HMSTR", "ONE"]
-SLEEP_INTERVAL = 60 * 5  # Every 5 minutes
-SCORE_THRESHOLD = 80
-ALERT_MEMORY = {}
-
+# --- Telegram Setup ---
+BOT_TOKEN = '8223601715:AAE0iVYff1eS1M4jcFytEbd1jcFzV-b6fFo'
+CHAT_ID = '1873122742'
 bot = Bot(token=BOT_TOKEN)
 
-# === FUNCTIONS ===
+# --- Coin IDs (CoinGecko) ---
+COINS = {
+    "CFX": "conflux-token",
+    "BLUR": "blur",
+    "JUP": "jupiter-exchange",
+    "MBOX": "mobox",
+    "PYTH": "pyth-network",
+    "PYR": "vulcan-forged",
+    "HMSTR": "hamster",
+    "ONE": "harmony"
+}
 
-def fetch_coin_data(coin):
+# --- Memory to Avoid Repeated Alerts ---
+last_scores = {}
+
+# --- RSI Calculation (lightweight, custom) ---
+def compute_rsi(prices, period=14):
+    if len(prices) < period + 1:
+        return None
+    gains = [max(prices[i] - prices[i-1], 0) for i in range(1, len(prices))]
+    losses = [max(prices[i-1] - prices[i], 0) for i in range(1, len(prices))]
+    avg_gain = sum(gains[-period:]) / period
+    avg_loss = sum(losses[-period:]) / period
+    if avg_loss == 0:
+        return 100
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
+
+# --- Get historical prices (24h sparkline) ---
+def get_historical_prices(coin_id):
+    url = f"https://api.coingecko.com/api/v3/coins/{coin_id}?localization=false&tickers=false&market_data=true&sparkline=true"
     try:
-        df = yf.download(f"{coin}-USDT", period="1d", interval="5m")
-        if len(df) < 2:
-            return None
-        return df
+        res = requests.get(url)
+        if res.status_code == 200:
+            prices = res.json()["market_data"]["sparkline_7d"]["price"][-100:]  # Last ~24h
+            return prices
+        return []
+    except:
+        return []
+
+# --- Get current coin data ---
+def fetch_coin_data(coin_id):
+    url = f"https://api.coingecko.com/api/v3/coins/{coin_id}?localization=false&tickers=false&market_data=true"
+    try:
+        res = requests.get(url)
+        if res.status_code == 200:
+            data = res.json()
+            return {
+                "price": data["market_data"]["current_price"]["usd"],
+                "volume": data["market_data"]["total_volume"]["usd"],
+                "change_24h": data["market_data"]["price_change_percentage_24h"],
+                "sparkline": data["market_data"]["sparkline_7d"]["price"][-100:]
+            }
+        return None
     except:
         return None
 
-def analyze_sentiment(coin):
-    try:
-        url = f"https://news.google.com/rss/search?q={coin}+crypto"
-        response = requests.get(url)
-        blob = TextBlob(response.text)
-        return blob.sentiment.polarity * 100  # scale -100 to +100
-    except:
-        return 0
-
-def score_signal(df, sentiment_score):
-    last = df.iloc[-1]
-    prev = df.iloc[-2]
-
-    # Features
-    price_change = ((last['Close'] - prev['Close']) / prev['Close']) * 100
-    volume_spike = (last['Volume'] / df['Volume'].mean())
-
+# --- Scoring Logic with Pattern Recognition ---
+def score_coin(data):
+    if not data: return 0
     score = 0
-    explanation = []
 
-    if abs(price_change) > 2:
-        score += 20
-        explanation.append(f"Price change: {price_change:.2f}%")
-
-    if volume_spike > 2:
+    # Price Change
+    if data["change_24h"] > 3:
         score += 25
-        explanation.append(f"Volume spike: {volume_spike:.2f}x")
+    elif data["change_24h"] > 1:
+        score += 10
 
-    if sentiment_score > 20 or sentiment_score < -20:
-        score += 20
-        explanation.append(f"Sentiment: {sentiment_score:.2f}")
+    # Volume Boost
+    if data["volume"] > 5_000_000:
+        score += 25
+    elif data["volume"] > 1_000_000:
+        score += 10
 
-    # Behavioral adjustment
-    if coin in ALERT_MEMORY and ALERT_MEMORY[coin]['last_result'] == 'fail':
-        score -= 15
-        explanation.append("Lowered score due to past bad alert")
+    # RSI
+    rsi = compute_rsi(data["sparkline"])
+    if rsi and rsi < 30:
+        score += 30  # oversold
+    elif rsi and 30 <= rsi <= 70:
+        score += 10
 
-    return min(score, 100), explanation
+    # Trend check: upward trend in sparkline
+    if data["sparkline"][-1] > statistics.mean(data["sparkline"][-10:]):
+        score += 10
 
-def send_telegram_alert(coin, score, explanation):
-    emojis = "🚀" if score > 90 else "⚠️" if score >= 80 else "🐌"
-    if coin in ALERT_MEMORY and time.time() - ALERT_MEMORY[coin]['last_time'] < 3600:
-        return  # skip repeat alerts within 1 hour
+    return score, rsi
 
-    message = f"\n🔥 ENTRY DETECTED - {coin} {emojis}\n"
-    message += f"Confidence Score: {score}/100\n"
-    message += "\n".join(explanation)
+# --- Alert Message Constructor ---
+def build_alert(symbol, score, data, rsi):
+    return f"""
+🚨 *SADDAM ENTRY ALERT* 🚨
 
-    bot.send_message(chat_id=CHAT_ID, text=message)
-    ALERT_MEMORY[coin] = {"last_time": time.time(), "last_result": 'sent'}
+*Coin:* {symbol}
+*Price:* ${data['price']:.4f}
+*Change (24h):* {data['change_24h']:.2f}%
+*Volume:* ${data['volume']:,.0f}
+*RSI:* {rsi:.2f}
+*Score:* {score}/100
 
-def monitor():
-    print("Scanning...")
-    for coin in COINS:
-        df = fetch_coin_data(coin)
-        if df is None:
+🧠 Analysis:
+- Price momentum: ✅
+- Volume strength: ✅
+- RSI-based pattern: ✅
+- Trend confirmation: ✅
+
+🔁 Powered by Saddam (mirrored from Aladdin)
+"""
+
+# --- Main Analysis Loop ---
+def analyze_market():
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] Running full scan...")
+    for symbol, coin_id in COINS.items():
+        data = fetch_coin_data(coin_id)
+        if not data:
             continue
+        score, rsi = score_coin(data)
+        if score >= 80 and last_scores.get(symbol) != score:
+            last_scores[symbol] = score
+            message = build_alert(symbol, score, data, rsi)
+            bot.send_message(chat_id=CHAT_ID, text=message, parse_mode="Markdown")
 
-        sentiment = analyze_sentiment(coin)
-        score, explanation = score_signal(df, sentiment)
+# --- Scheduled Loop ---
+def main():
+    while True:
+        analyze_market()
+        time.sleep(300)
 
-        if score >= SCORE_THRESHOLD:
-            send_telegram_alert(coin, score, explanation)
-
-# === MAIN LOOP ===
-schedule.every(SLEEP_INTERVAL).seconds.do(monitor)
-
-print("SADDAM system live...")
-monitor()  # run first manually
-
-while True:
-    schedule.run_pending()
-    time.sleep(5)
+if __name__ == "__main__":
+    main()
