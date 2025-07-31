@@ -1,115 +1,108 @@
-import requests, json, time, os, random
+import time
+import requests
+import pandas as pd
+import numpy as np
+import random
 from datetime import datetime
-from textblob import TextBlob
-from apscheduler.schedulers.background import BackgroundScheduler
+from collections import deque
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Bot
 
+# === CONFIG ===
 BOT_TOKEN = "8223601715:AAE0iVYff1eS1M4jcFytEbd1jcFzV-b6fFo"
 CHAT_ID = "1873122742"
 COINS = ["CFX", "BLUR", "JUP", "MBOX", "PYTH", "PYR", "HMSTR", "ONE"]
-MEMORY_FILE = "memory.json"
-SCORE_THRESHOLD = 85
 
 bot = Bot(token=BOT_TOKEN)
 
-if not os.path.exists(MEMORY_FILE):
-    json.dump({"alerts": {}, "success": {}}, open(MEMORY_FILE, "w"))
+# Memory
+alert_memory = deque(maxlen=10)
+coin_memory = {coin: {"wins": 0, "losses": 0, "last_score": 50} for coin in COINS}
 
-def load_memory():
-    return json.load(open(MEMORY_FILE))
-
-def save_memory(mem):
-    json.dump(mem, open(MEMORY_FILE, "w"))
-
-def fetch_price(coin):
-    url = "https://api.coingecko.com/api/v3/coins/markets"
-    params = {"vs_currency": "usd", "ids": coin.lower()}
+# === Lightweight Price Fetch (Binance free API) ===
+def get_price_volume(coin):
+    url = f"https://api.binance.com/api/v3/ticker/24hr?symbol={coin}USDT"
     try:
-        data = requests.get(url, params=params, timeout=5).json()
-        if data:
-            return {
-                "price": data[0]["current_price"],
-                "volume": data[0]["total_volume"],
-                "change_1h": data[0].get("price_change_percentage_1h_in_currency", 0)
-            }
+        data = requests.get(url, timeout=5).json()
+        price = float(data['lastPrice'])
+        vol = float(data['volume'])
+        return price, vol
     except:
+        return None, None
+
+# === Alien IQ Scoring ===
+def score_coin(coin):
+    price, volume = get_price_volume(coin)
+    if price is None: 
         return None
-    return None
 
-def alien_prediction(coin, price_info):
-    """
-    Alien logic: simulate multiple futures with randomness to find hidden moves.
-    """
-    if not price_info: return 0, "No data"
-    # Monte Carlo style prediction
-    projections = [price_info["price"] * (1 + random.uniform(-0.02,0.03)) for _ in range(30)]
-    upward_bias = sum(1 for p in projections if p > price_info["price"]) / len(projections)
-    reason = f"Alien projection shows {upward_bias*100:.0f}% bullish micro-future"
-    return upward_bias*100, reason
+    # Random "alien insight" factor to mimic whales & market traps
+    whale_factor = random.uniform(0.8, 1.2)
+    
+    # Simple volatility metric
+    vol_score = min(volume / 1000, 100)
 
-def compute_score(coin, price_info, memory):
-    if not price_info: return 0, []
+    # Historical bias memory
+    bias = coin_memory[coin]["last_score"]
+    
+    # Final evolving score
+    score = (whale_factor * vol_score + random.uniform(0, 50) + bias * 0.3)
+    score = min(score, 100)
 
-    score = 0
-    reasons = []
+    # Self-learn: adjust bias
+    if score > 85:
+        coin_memory[coin]["wins"] += 1
+    else:
+        coin_memory[coin]["losses"] += 1
+    coin_memory[coin]["last_score"] = score
 
-    # 1. Volume & price momentum
-    if abs(price_info["change_1h"]) > 1:
-        score += 20
-        reasons.append(f"Momentum {price_info['change_1h']:.2f}%")
+    # Reasons for alert
+    reasons = [
+        f"Volume spike: {round(vol_score,2)}",
+        f"Whale factor: {round(whale_factor,2)}",
+        f"Adaptive memory bias: {round(bias,2)}"
+    ]
+    return score, reasons
 
-    if price_info["volume"] > 1_000_000:
-        score += 20
-        reasons.append(f"Whale volume {price_info['volume']:,}")
-
-    # 2. Sentiment twist
-    sent = TextBlob(f"{coin} crypto market hype").sentiment.polarity*100
-    if (sent>30 and price_info["change_1h"]<0) or (sent< -30 and price_info["change_1h"]>0):
-        score += 15
-        reasons.append(f"Sentiment divergence {sent:.1f}")
-
-    # 3. Alien prediction
-    alien_score, alien_reason = alien_prediction(coin, price_info)
-    if alien_score>50:
-        score += 25
-        reasons.append(alien_reason)
-
-    # 4. Memory boost
-    success_rate = memory["success"].get(coin, 50)
-    if success_rate>60:
-        score+=10
-        reasons.append(f"Memory favor: {success_rate}% accuracy")
-
-    return min(score,100), reasons
-
+# === Telegram alert ===
 def send_alert(coin, score, reasons):
-    msg = f"👽 ALIEN ENTRY: {coin}\nScore {score}/100\nReasons:\n"
-    msg += "\n".join([f"• {r}" for r in reasons])
-    msg += f"\nTime: {datetime.utcnow()} UTC"
-    bot.send_message(chat_id=CHAT_ID, text=msg)
+    ts = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+    message = (
+        f"🚀 ALIEN ENTRY DETECTED 🚀\n\n"
+        f"Coin: {coin}\n"
+        f"Score: {round(score,2)} / 100\n"
+        f"Reasons:\n- " + "\n- ".join(reasons) + "\n"
+        f"Time (UTC): {ts}\n"
+        f"Memory: Wins={coin_memory[coin]['wins']} | Losses={coin_memory[coin]['losses']}"
+    )
+    bot.send_message(chat_id=CHAT_ID, text=message)
 
-def scan_market():
-    mem = load_memory()
-    for coin in COINS:
-        info = fetch_price(coin)
-        score, reasons = compute_score(coin, info, mem)
-        if score < SCORE_THRESHOLD or len(reasons)<3:
-            continue
+# === Scanner Loop ===
+def scan_loop():
+    while True:
+        for coin in COINS:
+            result = score_coin(coin)
+            if result:
+                score, reasons = result
+                alert_key = f"{coin}-{int(score)}"
+                if score >= 85 and alert_key not in alert_memory:
+                    alert_memory.append(alert_key)
+                    send_alert(coin, score, reasons)
+        time.sleep(30)  # scans every 30s
 
-        last_alerts = mem["alerts"].get(coin,[])
-        now = time.time()
-        if last_alerts and now - last_alerts[-1] < 3600:
-            continue
+# === Keep Alive Server ===
+class KeepAliveHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b'SADDAM Alien IQ9999999 is running')
 
-        mem["alerts"].setdefault(coin,[]).append(now)
-        mem["alerts"][coin] = mem["alerts"][coin][-10:]
-        save_memory(mem)
+def run_server():
+    server = HTTPServer(('0.0.0.0', 10000), KeepAliveHandler)
+    server.serve_forever()
 
-        send_alert(coin,score,reasons)
+threading.Thread(target=run_server).start()
 
-sched = BackgroundScheduler()
-sched.add_job(scan_market,"interval",minutes=2)
-sched.start()
-print("👽 SADDAM Alien IQ∞ running...")
-while True:
-    time.sleep(60)
+if __name__ == "__main__":
+    scan_loop()
