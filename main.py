@@ -1,136 +1,136 @@
-import time
-import requests
-import pandas as pd
-import numpy as np
-from datetime import datetime
-from apscheduler.schedulers.background import BackgroundScheduler
+"""
+Mini Aladdin - Devil Mode v1.0
+Aggressive, Memory-Integrated, Fail-Deletion Enabled
+"""
+
+import ccxt, pandas as pd, numpy as np, sqlite3, time, datetime, logging
 from telegram import Bot
-import json
-import os
 
-# ===== CONFIG =====
-BOT_TOKEN = "8223601715:AAE0iVYff1eS1M4jcFytEbd1jcFzV-b6fFo"
+# ===============================
+# CONFIG
+# ===============================
+WATCHLIST = ["CFX/USDT", "BLUR/USDT", "JUP/USDT", "MBOX/USDT", "PYTH/USDT", "PYR/USDT", "ONE/USDT"]
+DB_PATH = "mini_aladdin_backtest.db"
+TELEGRAM_TOKEN = "8223601715:AAE0iVYff1eS1M4jcFytEbd1jcFzV-b6fFo"
 CHAT_ID = "1873122742"
-COINS = ["CFX", "BLUR", "JUP", "MBOX", "PYTH", "PYR", "HMSTR", "ONE"]
 
-bot = Bot(token=BOT_TOKEN)
+bot = Bot(token=TELEGRAM_TOKEN)
+exchange = ccxt.binance()
+logging.basicConfig(filename='devil_log.txt', level=logging.INFO)
 
-# Memory for alerts and coin performance
-memory_file = "memory.json"
-if os.path.exists(memory_file):
-    with open(memory_file, "r") as f:
-        memory = json.load(f)
-else:
-    memory = {coin: {"last_alert": 0, "wins": 0, "losses": 0, "bias": 0} for coin in COINS}
+# Fail-deletion memory
+FAIL_PATTERNS = {}
 
-# ===== FUNCTIONS =====
+# ===============================
+# DB Connection
+# ===============================
+def get_fingerprint_match(symbol, vol_spike, fakeouts, cons_days):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    vol_low, vol_high = vol_spike*0.7, vol_spike*1.3
+    fake_low, fake_high = max(0,fakeouts-1), fakeouts+1
+    cons_low, cons_high = max(1,cons_days-2), cons_days+2
+    
+    c.execute("""SELECT gain_pct FROM fingerprints
+                 WHERE symbol=? 
+                 AND volume_spike BETWEEN ? AND ?
+                 AND fakeout_count BETWEEN ? AND ?
+                 AND pre_consolidation_days BETWEEN ? AND ?""",
+                 (symbol, vol_low, vol_high, fake_low, fake_high, cons_low, cons_high))
+    rows = c.fetchall()
+    conn.close()
+    
+    if len(rows)==0:
+        return 0, 0
+    win_events = [r[0] for r in rows if r[0] >= 100]
+    win_rate = len(win_events)/len(rows)*100
+    return len(rows), win_rate
 
-def save_memory():
-    with open(memory_file, "w") as f:
-        json.dump(memory, f)
+# ===============================
+# IQ Scoring (placeholder logic)
+# ===============================
+def compute_iq(df):
+    # Simple placeholder for Whale + Volume + Social score
+    vol_ratio = df['volume'].iloc[-1] / df['volume'].iloc[-20:].mean()
+    price_slope = (df['close'].iloc[-1] - df['close'].iloc[-5]) / df['close'].iloc[-5] * 100
+    whale_score = min(40, vol_ratio*5)
+    social_score = np.random.randint(0,20)
+    return min(100, whale_score+social_score+max(0,price_slope))
 
-def get_coin_data(coin):
-    """Fetch last 1h data for 1m candles using CoinGecko (free, no key)."""
-    url = f"https://api.coingecko.com/api/v3/coins/{coin.lower()}/market_chart?vs_currency=usd&days=1&interval=minute"
+# ===============================
+# Signal Generator
+# ===============================
+def generate_signal(symbol):
+    df = fetch_ohlcv(symbol)
+    if df is None or len(df)<30:
+        return None
+
+    # Compute fingerprint features
+    volume_spike = df['volume'].iloc[-1] / df['volume'].iloc[-7:].mean()
+    fakeouts = (df['low'].iloc[-5:] < df['close'].iloc[-6]).sum()
+    cons_days = round(1/(df['close'].iloc[-7:].std()/df['close'].iloc[-7:].mean()+0.0001))
+    iq_score = compute_iq(df)
+
+    # Fail deletion check
+    fp_key = (round(volume_spike,1), fakeouts, cons_days)
+    if fp_key in FAIL_PATTERNS and FAIL_PATTERNS[fp_key] >= 2:
+        return None  # Auto-ignore repeated bad pattern
+
+    # Fingerprint historical match
+    matches, win_rate = get_fingerprint_match(symbol, volume_spike, fakeouts, cons_days)
+    if iq_score < 70 or win_rate < 60:
+        return None
+
+    # Compute entry / stop / target
+    entry = df['close'].iloc[-1]
+    stop = round(entry*0.9, 4)
+    target = round(entry*2, 4)
+    
+    return {
+        "symbol": symbol,
+        "entry": entry,
+        "target": target,
+        "stop": stop,
+        "confidence": iq_score,
+        "win_rate": win_rate,
+        "pattern_key": fp_key
+    }
+
+# ===============================
+# Data Fetch
+# ===============================
+def fetch_ohlcv(symbol):
     try:
-        data = requests.get(url, timeout=10).json()
-        prices = pd.DataFrame(data['prices'], columns=['timestamp', 'price'])
-        volumes = pd.DataFrame(data['total_volumes'], columns=['timestamp', 'volume'])
-        df = prices
-        df['volume'] = volumes['volume']
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        return df.tail(60)  # last 60 mins
+        data = exchange.fetch_ohlcv(symbol, timeframe='1h', limit=100)
+        df = pd.DataFrame(data, columns=['time','open','high','low','close','volume'])
+        return df
     except:
         return None
 
-def compute_score(coin, df):
-    """Calculate entry score based on anomalies and adaptive memory."""
-    if df is None or len(df) < 5:
-        return 0, []
-
-    last_price = df['price'].iloc[-1]
-    price_change_5m = (last_price - df['price'].iloc[-5]) / df['price'].iloc[-5] * 100
-    avg_volume = df['volume'].iloc[:-1].mean()
-    last_volume = df['volume'].iloc[-1]
-    volume_ratio = last_volume / (avg_volume + 1e-9)
-
-    reasons = []
-    score = 0
-
-    # 1. Price spike
-    if abs(price_change_5m) > 1:
-        score += min(abs(price_change_5m) * 10, 30)
-        reasons.append(f"Price move {price_change_5m:.2f}% in 5m")
-
-    # 2. Volume anomaly
-    if volume_ratio > 2:
-        score += min(volume_ratio * 10, 30)
-        reasons.append(f"Volume spike {volume_ratio:.2f}x avg")
-
-    # 3. Whale/fakeout
-    if volume_ratio > 3 and abs(price_change_5m) > 2:
-        score += 20
-        reasons.append("Whale or fakeout pattern detected")
-
-    # 4. Adaptive memory bias
-    bias = memory[coin]["bias"]
-    score += bias
-    if bias > 0:
-        reasons.append("Memory bias bullish")
-    elif bias < 0:
-        reasons.append("Memory bias bearish")
-
-    # 5. Trend check
-    trend = df['price'].iloc[-20:].pct_change().mean()
-    if trend > 0.001:
-        score += 10
-        reasons.append("Short-term uptrend detected")
-    elif trend < -0.001:
-        score += 10
-        reasons.append("Short-term downtrend detected")
-
-    return min(score, 100), reasons[:6]  # Limit to 6 reasons
-
-def send_alert(coin, score, reasons):
-    """Send a clean Telegram alert with memory info."""
-    wins = memory[coin]["wins"]
-    losses = memory[coin]["losses"]
-    msg = (
-        f"🚀 ALIEN ENTRY DETECTED 🚀\n\n"
-        f"Coin: {coin}\n"
-        f"Score: {score} / 100\n"
-        f"Reasons:\n- " + "\n- ".join(reasons) + "\n"
-        f"Time (UTC): {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}\n"
-        f"Memory: Wins={wins} | Losses={losses}"
-    )
-    bot.send_message(chat_id=CHAT_ID, text=msg)
-
-def scan_market():
-    print(f"[{datetime.utcnow()}] Scanning...")
-    for coin in COINS:
-        df = get_coin_data(coin)
-        score, reasons = compute_score(coin, df)
-
-        now = time.time()
-        last_time = memory[coin]["last_alert"]
-
-        # Only alert if score >= 80 and 30min passed since last alert
-        if score >= 80 and now - last_time > 1800:
-            send_alert(coin, score, reasons)
-            memory[coin]["last_alert"] = now
-
-            # Adaptive memory: increase bias if triggered
-            memory[coin]["bias"] = min(memory[coin]["bias"] + 1, 20)
-            save_memory()
-        else:
-            # Reduce bias slowly to avoid overfitting
-            memory[coin]["bias"] = max(memory[coin]["bias"] - 0.1, -10)
-
-# ===== SCHEDULER =====
-scheduler = BackgroundScheduler()
-scheduler.add_job(scan_market, 'interval', minutes=5)
-scheduler.start()
-
-print("🚀 SADDAM B2 Ultra IQ running... Press Ctrl+C to exit.")
+# ===============================
+# Main Loop
+# ===============================
 while True:
-    time.sleep(60)
+    for coin in WATCHLIST:
+        signal = generate_signal(coin)
+        if signal:
+            msg = f"""
+⚡ Mini Aladdin DEVIL 2× Signal
+
+Coin: {signal['symbol']}
+Entry: {signal['entry']}
+Target: {signal['target']}
+Stop: {signal['stop']}
+Confidence: {signal['confidence']}%
+Historical Win Rate: {signal['win_rate']}%
+Fail-Deletion Active ✅
+"""
+            bot.send_message(chat_id=CHAT_ID, text=msg)
+            logging.info(f"{datetime.datetime.now()} | {signal}")
+
+            # Simulate post-trade monitoring (paper)
+            # If fail quickly, add to fail patterns
+            if signal['confidence']<75:
+                FAIL_PATTERNS[signal['pattern_key']] = FAIL_PATTERNS.get(signal['pattern_key'],0)+1
+
+    time.sleep(3600)  # Run hourly for now
