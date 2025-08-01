@@ -9,8 +9,8 @@ import json
 import os
 
 # ===== CONFIG =====
-BOT_TOKEN = "YOUR_BOT_TOKEN"
-CHAT_ID = "YOUR_CHAT_ID"
+BOT_TOKEN = "8223601715:AAE0iVYff1eS1M4jcFytEbd1jcFzV-b6fFo"
+CHAT_ID = "1873122742"
 COINS = ["CFX", "BLUR", "JUP", "MBOX", "PYTH", "PYR", "HMSTR", "ONE"]
 
 bot = Bot(token=BOT_TOKEN)
