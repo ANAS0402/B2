@@ -1,6 +1,9 @@
 """
-Mini Aladdin - Devil Mode v1.0
-Aggressive Mode with Fail-Deletion
+Mini Aladdin - Devil Mode v1.1 (Aggressive + Heartbeat)
+- Scans watchlist hourly
+- Sends 2x signals to Telegram
+- Sends heartbeat if no signals
+- Learns from fails
 """
 
 import ccxt, pandas as pd, numpy as np, sqlite3, time, datetime, logging
@@ -8,8 +11,11 @@ from telegram import Bot
 
 WATCHLIST = ["CFX/USDT", "BLUR/USDT", "JUP/USDT", "MBOX/USDT", "PYTH/USDT", "PYR/USDT", "ONE/USDT"]
 DB_PATH = "mini_aladdin_backtest.db"
-TELEGRAM_TOKEN = "8223601715:AAE0iVYff1eS1M4jcFytEbd1jcFzV-b6fFo"
-CHAT_ID = "1873122742"
+
+# Telegram setup
+import os
+TELEGRAM_TOKEN = os.environ.get("8223601715:AAE0iVYff1eS1M4jcFytEbd1jcFzV-b6fFo")
+CHAT_ID = os.environ.get("CHAT_ID", "1873122742")
 
 bot = Bot(token=TELEGRAM_TOKEN)
 exchange = ccxt.binance()
@@ -86,9 +92,11 @@ def generate_signal(symbol):
     }
 
 while True:
+    found_signal = False
     for coin in WATCHLIST:
         signal = generate_signal(coin)
         if signal:
+            found_signal = True
             msg = f"""
 ⚡ Mini Aladdin DEVIL 2× Signal
 
@@ -105,5 +113,9 @@ Fail-Deletion Active ✅
 
             if signal['confidence']<75:
                 FAIL_PATTERNS[signal['pattern_key']] = FAIL_PATTERNS.get(signal['pattern_key'],0)+1
+
+    # Heartbeat message if no signal
+    if not found_signal:
+        bot.send_message(chat_id=CHAT_ID, text=f"🤖 Devil Bot Alive: No trades this hour. {datetime.datetime.now()}")
 
     time.sleep(3600)  # hourly
