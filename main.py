@@ -1,14 +1,11 @@
 """
 Mini Aladdin - Devil Mode v1.0
-Aggressive, Memory-Integrated, Fail-Deletion Enabled
+Aggressive Mode with Fail-Deletion
 """
 
 import ccxt, pandas as pd, numpy as np, sqlite3, time, datetime, logging
 from telegram import Bot
 
-# ===============================
-# CONFIG
-# ===============================
 WATCHLIST = ["CFX/USDT", "BLUR/USDT", "JUP/USDT", "MBOX/USDT", "PYTH/USDT", "PYR/USDT", "ONE/USDT"]
 DB_PATH = "mini_aladdin_backtest.db"
 TELEGRAM_TOKEN = "8223601715:AAE0iVYff1eS1M4jcFytEbd1jcFzV-b6fFo"
@@ -17,13 +14,8 @@ CHAT_ID = "1873122742"
 bot = Bot(token=TELEGRAM_TOKEN)
 exchange = ccxt.binance()
 logging.basicConfig(filename='devil_log.txt', level=logging.INFO)
-
-# Fail-deletion memory
 FAIL_PATTERNS = {}
 
-# ===============================
-# DB Connection
-# ===============================
 def get_fingerprint_match(symbol, vol_spike, fakeouts, cons_days):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -46,42 +38,39 @@ def get_fingerprint_match(symbol, vol_spike, fakeouts, cons_days):
     win_rate = len(win_events)/len(rows)*100
     return len(rows), win_rate
 
-# ===============================
-# IQ Scoring (placeholder logic)
-# ===============================
 def compute_iq(df):
-    # Simple placeholder for Whale + Volume + Social score
     vol_ratio = df['volume'].iloc[-1] / df['volume'].iloc[-20:].mean()
     price_slope = (df['close'].iloc[-1] - df['close'].iloc[-5]) / df['close'].iloc[-5] * 100
     whale_score = min(40, vol_ratio*5)
     social_score = np.random.randint(0,20)
     return min(100, whale_score+social_score+max(0,price_slope))
 
-# ===============================
-# Signal Generator
-# ===============================
+def fetch_ohlcv(symbol):
+    try:
+        data = exchange.fetch_ohlcv(symbol, timeframe='1h', limit=100)
+        df = pd.DataFrame(data, columns=['time','open','high','low','close','volume'])
+        return df
+    except:
+        return None
+
 def generate_signal(symbol):
     df = fetch_ohlcv(symbol)
     if df is None or len(df)<30:
         return None
 
-    # Compute fingerprint features
     volume_spike = df['volume'].iloc[-1] / df['volume'].iloc[-7:].mean()
     fakeouts = (df['low'].iloc[-5:] < df['close'].iloc[-6]).sum()
     cons_days = round(1/(df['close'].iloc[-7:].std()/df['close'].iloc[-7:].mean()+0.0001))
     iq_score = compute_iq(df)
 
-    # Fail deletion check
     fp_key = (round(volume_spike,1), fakeouts, cons_days)
     if fp_key in FAIL_PATTERNS and FAIL_PATTERNS[fp_key] >= 2:
-        return None  # Auto-ignore repeated bad pattern
+        return None
 
-    # Fingerprint historical match
     matches, win_rate = get_fingerprint_match(symbol, volume_spike, fakeouts, cons_days)
     if iq_score < 70 or win_rate < 60:
         return None
 
-    # Compute entry / stop / target
     entry = df['close'].iloc[-1]
     stop = round(entry*0.9, 4)
     target = round(entry*2, 4)
@@ -96,20 +85,6 @@ def generate_signal(symbol):
         "pattern_key": fp_key
     }
 
-# ===============================
-# Data Fetch
-# ===============================
-def fetch_ohlcv(symbol):
-    try:
-        data = exchange.fetch_ohlcv(symbol, timeframe='1h', limit=100)
-        df = pd.DataFrame(data, columns=['time','open','high','low','close','volume'])
-        return df
-    except:
-        return None
-
-# ===============================
-# Main Loop
-# ===============================
 while True:
     for coin in WATCHLIST:
         signal = generate_signal(coin)
@@ -128,9 +103,7 @@ Fail-Deletion Active ✅
             bot.send_message(chat_id=CHAT_ID, text=msg)
             logging.info(f"{datetime.datetime.now()} | {signal}")
 
-            # Simulate post-trade monitoring (paper)
-            # If fail quickly, add to fail patterns
             if signal['confidence']<75:
                 FAIL_PATTERNS[signal['pattern_key']] = FAIL_PATTERNS.get(signal['pattern_key'],0)+1
 
-    time.sleep(3600)  # Run hourly for now
+    time.sleep(3600)  # hourly
