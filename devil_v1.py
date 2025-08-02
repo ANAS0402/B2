@@ -8,6 +8,7 @@ Mini Aladdin - Devil Mode v1.1 (Aggressive + Heartbeat)
 
 import ccxt, pandas as pd, numpy as np, sqlite3, time, datetime, logging
 from telegram import Bot
+from telegram.constants import ParseMode
 
 WATCHLIST = ["CFX/USDT", "BLUR/USDT", "JUP/USDT", "MBOX/USDT", "PYTH/USDT", "PYR/USDT", "ONE/USDT"]
 DB_PATH = "mini_aladdin_backtest.db"
