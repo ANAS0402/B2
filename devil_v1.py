@@ -1,19 +1,10 @@
-"""
-Mini Aladdin - Devil Mode v1.2 (Aggressive + Heartbeat)
-Hardcoded Telegram Token + Chat ID
-- Scans watchlist hourly
-- Sends 2x signals to Telegram
-- Sends heartbeat if no signals
-- Learns from fails
-"""
-
 import ccxt, pandas as pd, numpy as np, sqlite3, time, datetime, logging
 from telegram import Bot
 
 WATCHLIST = ["CFX/USDT", "BLUR/USDT", "JUP/USDT", "MBOX/USDT", "PYTH/USDT", "PYR/USDT", "ONE/USDT"]
 DB_PATH = "mini_aladdin_backtest.db"
 
-# ✅ Hardcoded Telegram Credentials
+# Hardcoded Telegram credentials
 TELEGRAM_TOKEN = "8223601715:AAE0iVYff1eS1M4jcFytEbd1jcFzV-b6fFo"
 CHAT_ID = "1873122742"
 
@@ -114,8 +105,7 @@ Fail-Deletion Active ✅
             if signal['confidence']<75:
                 FAIL_PATTERNS[signal['pattern_key']] = FAIL_PATTERNS.get(signal['pattern_key'],0)+1
 
-    # Heartbeat message if no signal
     if not found_signal:
         bot.send_message(chat_id=CHAT_ID, text=f"🤖 Devil Bot Alive: No trades this hour. {datetime.datetime.now()}")
 
-    time.sleep(3600)  # hourly loop
+    time.sleep(3600)
