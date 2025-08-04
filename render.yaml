@@ -1,2 +1,10 @@
-runtime: python
-pythonVersion: 3.10
+services:
+  - type: web
+    name: mini-aladdin
+    env: python
+    plan: free
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.10.13
+    buildCommand: pip install -r requirements.txt
+    startCommand: python devil_v1.py
