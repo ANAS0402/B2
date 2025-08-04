@@ -1,41 +1,49 @@
-import ccxt, pandas as pd, sqlite3, os
+import os
+import sqlite3
+import ccxt
+import pandas as pd
+from datetime import datetime, timedelta
+
+# Force DB to stay in project folder
+DB_PATH = os.path.join(os.path.dirname(__file__), "mini_aladdin_backtest.db")
 
 WATCHLIST = ["CFX/USDT", "BLUR/USDT", "JUP/USDT", "MBOX/USDT", "PYTH/USDT", "PYR/USDT", "ONE/USDT"]
-DB_PATH = "mini_aladdin_backtest.db"
 
-print("Building fingerprint DB...")
-
+# Connect to SQLite DB
 conn = sqlite3.connect(DB_PATH)
 c = conn.cursor()
 
-c.execute('''CREATE TABLE IF NOT EXISTS fingerprints (
+# Create table if not exists
+c.execute("""
+CREATE TABLE IF NOT EXISTS fingerprints (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     symbol TEXT,
-    volume_spike REAL,
-    fakeout_count INTEGER,
-    pre_consolidation_days INTEGER,
+    timestamp TEXT,
     gain_pct REAL
-)''')
+)
+""")
+conn.commit()
+
+print("Building fingerprint DB...")
 
 exchange = ccxt.binance()
-
 for symbol in WATCHLIST:
     print(f"Building fingerprint for {symbol}...")
+
     try:
-        data = exchange.fetch_ohlcv(symbol, timeframe='1h', limit=500)
-        df = pd.DataFrame(data, columns=['time','open','high','low','close','volume'])
-        if len(df) < 50:
-            continue
-        for i in range(20, len(df)-5):
-            vol_spike = df['volume'].iloc[i] / df['volume'].iloc[i-7:i].mean()
-            fakeouts = (df['low'].iloc[i-5:i] < df['close'].iloc[i-6]).sum()
-            cons_days = round(1/(df['close'].iloc[i-7:i].std()/df['close'].iloc[i-7:i].mean()+0.0001))
-            future_gain = df['high'].iloc[i+5:i+20].max()/df['close'].iloc[i]*100-100
-            c.execute("INSERT INTO fingerprints(symbol, volume_spike, fakeout_count, pre_consolidation_days, gain_pct) VALUES (?,?,?,?,?)",
-                      (symbol, vol_spike, fakeouts, cons_days, future_gain))
+        # Fetch last 500 candles (1d timeframe)
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe='1d', limit=500)
+        df = pd.DataFrame(ohlcv, columns=['ts', 'open', 'high', 'low', 'close', 'volume'])
+        df['gain_pct'] = df['close'].pct_change() * 100
+
+        # Identify "fingerprints" of 100%+ runs
+        for i in range(1, len(df)):
+            if df['close'][i] > df['close'][i-1] * 2:  # 100% gain
+                c.execute("INSERT INTO fingerprints (symbol, timestamp, gain_pct) VALUES (?, ?, ?)",
+                          (symbol, datetime.utcfromtimestamp(df['ts'][i]/1000).isoformat(), df['gain_pct'][i]))
         conn.commit()
     except Exception as e:
-        print(f"Error {symbol}: {e}")
+        print(f"Error fetching {symbol}: {e}")
 
-conn.close()
 print("Fingerprint DB created ✅")
+conn.close()
