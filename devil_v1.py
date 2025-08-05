@@ -1,57 +1,40 @@
-import os
-import time
-import datetime
 import sqlite3
+import datetime
+import ccxt
+import threading
+import time
 from telegram import Bot
+from flask import Flask
 
-# ---------------- CONFIG ----------------
+DB_PATH = "mini_aladdin_backtest.db"
 TELEGRAM_TOKEN = "8223601715:AAE0iVYff1eS1M4jcFytEbd1jcFzV-b6fFo"
 CHAT_ID = "1873122742"
-DB_PATH = "mini_aladdin_backtest.db"
-WATCHLIST = ["CFX", "BLUR", "JUP", "MBOX", "PYTH", "PYR", "ONE"]
 
 bot = Bot(token=TELEGRAM_TOKEN)
 
-# ---------------- FUNCTIONS ----------------
-
-def check_fingerprints(symbol):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS fingerprints(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            symbol TEXT,
-            gain_pct REAL
-        )
-    """)
-    conn.commit()
-
-    # Count how many patterns for this symbol
-    c.execute("SELECT COUNT(*) FROM fingerprints WHERE symbol=?", (symbol,))
-    matches = c.fetchone()[0]
-    conn.close()
-    return matches
-
+# ---- Bot Logic ----
 def run_bot():
-    bot.send_message(chat_id=CHAT_ID, text="🤖 Devil Bot Started...")
-
     while True:
-        for symbol in WATCHLIST:
-            try:
-                matches = check_fingerprints(symbol)
-                if matches > 0:
-                    bot.send_message(chat_id=CHAT_ID,
-                        text=f"✅ {symbol}: {matches} patterns found in DB.")
-                else:
-                    bot.send_message(chat_id=CHAT_ID,
-                        text=f"⚠️ {symbol}: No patterns yet, still learning.")
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute("SELECT name FROM sqlite_master WHERE type='table';")
+            tables = c.fetchall()
+            print("DB Tables Found:", tables)
+            conn.close()
+            
+            bot.send_message(chat_id=CHAT_ID, text=f"🤖 Devil Bot Alive {datetime.datetime.now()}")
+        except Exception as e:
+            print("Error in bot loop:", e)
+        time.sleep(60)  # every minute
 
-            except Exception as e:
-                bot.send_message(chat_id=CHAT_ID,
-                    text=f"❌ Error for {symbol}: {str(e)}")
+# ---- Flask Dummy Server ----
+app = Flask(__name__)
 
-        time.sleep(3600)  # check every 1 hour
+@app.route('/')
+def home():
+    return "Devil Bot is Running!"
 
-# ---------------- START ----------------
-if __name__ == "__main__":
-    run_bot()
+if __name__ == '__main__':
+    threading.Thread(target=run_bot).start()
+    app.run(host='0.0.0.0', port=10000)  # Render detects this port
